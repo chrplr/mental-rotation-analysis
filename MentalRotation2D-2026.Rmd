@@ -1,0 +1,277 @@
+---
+title: "Analysis of the Mental Rotation 2D experiment"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+Volunteers took the experiment at <https://github.com/chrplr/goxpyriment/tree/main/examples/Mental-Rotation-2D>
+
+
+```{r setup, message=FALSE}
+library(dplyr)
+library(ggplot2)
+set.seed(42)  # makes the permutation tests reproducible
+```
+
+## Importing data into a single data frame
+
+```{r}
+files <- list.files("./data", pattern = "\\.csv$", full.names=T)
+print(length(files))
+files
+```
+
+```{r}
+read_all <- function(files) {
+  bind_rows(lapply(files, function(f) {
+    d <- read.csv(f)
+    d$file_name <- f
+    # the csv files store "true"/"false" in lowercase, which R does not parse as logical
+    d$is_correct <- tolower(as.character(d$is_correct)) == "true"
+    d
+  })) %>%
+    relocate(file_name)
+}
+
+data <- read_all(files)
+head(data)
+```
+
+## Data inspection and cleaning
+
+### Number of datapoints in each file
+
+```{r}
+data %>% count(file_name)
+```
+
+Let's remove the file with less than 40 datapoints
+
+```{r}
+files_ok <- setdiff(files, "Mental-Rotation-2D_sub-001_date-20260924-064330.csv")
+```
+
+```{r}
+# we recreate the data frame with the new list of files
+data <- read_all(files_ok)
+head(data)
+```
+
+### Associating a unique subject_id to each file_name
+
+```{r}
+data <- data %>%
+  mutate(subject_id = factor(match(file_name, unique(file_name))))
+head(data)
+```
+
+## Error rates
+
+Number of correct responses (out of 40) per subject:
+
+```{r}
+data %>%
+  group_by(subject_id) %>%
+  summarise(n_correct = mean(is_correct) * 40)
+```
+
+Let's inspect the errors
+
+```{r}
+data %>% filter(!is_correct)
+```
+
+## Reaction times
+
+First, we inspect their distribution with an histogram
+
+```{r}
+ggplot(data, aes(x = rt)) +
+  geom_histogram(bins = 30)
+```
+
+Then with a boxplot
+
+```{r}
+ggplot(data, aes(y = rt)) +
+  geom_boxplot()
+```
+
+### A look at the individual differences
+
+```{r}
+ggplot(data, aes(x = rt, y = 0, color = subject_id)) +
+  # adds slight vertical spread so overlapping points remain visible
+  geom_jitter(width = 0, height = 0.2, size = 2.5, alpha = 0.8) +
+  theme(legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+```
+
+### Removing outliers
+
+```{r}
+data_clean <- data %>% filter(rt > 150, is_correct)
+```
+
+```{r}
+print(nrow(data))                 # number of original data points
+nrow(data) - nrow(data_clean)     # number of rejected data points
+```
+
+```{r}
+medrt <- data_clean %>%
+  group_by(subject_id) %>%
+  summarise(rt = median(rt))
+medrt
+```
+
+```{r}
+ggplot(medrt, aes(x = rt, y = 0, color = subject_id)) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+```
+
+# Effects of angle and condition (same vs mirror)
+
+```{r}
+rts2 <- data_clean %>%
+  group_by(subject_id, condition, angle) %>%
+  summarise(rt = median(rt), .groups = "drop")
+rts2
+```
+
+```{r}
+rts3 <- data_clean %>%
+  group_by(condition, angle) %>%
+  summarise(rt = median(rt), .groups = "drop")
+rts3
+```
+
+```{r, fig.width=8, fig.height=5}
+ggplot(rts3, aes(x = angle, y = rt, color = condition)) +
+  geom_line() +
+  geom_point() +  # adds points at each angle
+  labs(x = "Angle", y = "Response Time (ms)",
+       title = "Median RT by Angle across Conditions")
+```
+
+## Inferential analysis
+
+**Are the differences statistically significant? That is, what is the probability that they are due to chance fluctuations?**
+
+If we find that the probability is small, then we will reject the "null" hypothesis. The approach is called "Hypothesis testing".
+
+```{r, fig.width=10, fig.height=12}
+ggplot(rts2, aes(x = angle, y = rt, color = condition)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ subject_id, ncol = 3, labeller = label_both)  # one subplot per subject
+```
+
+Let's forget the distinction between mirror & same
+
+```{r, fig.width=8, fig.height=5}
+# individual results superposed (averaging over condition)
+rts2 %>%
+  group_by(subject_id, angle) %>%
+  summarise(rt = mean(rt), .groups = "drop") %>%
+  ggplot(aes(x = angle, y = rt, color = subject_id)) +
+  geom_line() +
+  geom_point()
+```
+
+```{r, fig.width=8, fig.height=5}
+# group result, with 95% confidence intervals (t-based)
+mean_ci95 <- function(x) {
+  ci <- t.test(x)$conf.int
+  data.frame(y = mean(x), ymin = ci[1], ymax = ci[2])
+}
+
+ggplot(rts2, aes(x = angle, y = rt)) +
+  stat_summary(fun = mean, geom = "line") +
+  stat_summary(fun = mean, geom = "point") +
+  stat_summary(fun.data = mean_ci95, geom = "ribbon", alpha = 0.2)
+```
+
+Let's compute p-values for the differences between angles conditions
+
+```{r}
+angles_rt <- rts2 %>%
+  group_by(angle, subject_id) %>%
+  summarise(rt = mean(rt), .groups = "drop")
+angles_rt
+```
+
+```{r}
+# rows are sorted by subject_id within each angle, so the vectors are paired
+rt0   <- angles_rt %>% filter(angle == 0)   %>% pull(rt)
+rt40  <- angles_rt %>% filter(angle == 40)  %>% pull(rt)
+rt80  <- angles_rt %>% filter(angle == 80)  %>% pull(rt)
+rt120 <- angles_rt %>% filter(angle == 120) %>% pull(rt)
+rt160 <- angles_rt %>% filter(angle == 160) %>% pull(rt)
+```
+
+```{r}
+rt40 - rt0
+```
+
+Let's compute the p-values using a permutation test (see <https://en.wikipedia.org/wiki/Permutation_test>)
+
+```{r}
+my_permutation_test <- function(sample, npermutations = 10000) {
+  # test if sample mean is significantly above 0 (one-tail test)
+  obs_mean <- mean(sample)
+  p <- length(sample)
+  h0_dist <- replicate(npermutations,
+                       mean(sample * sample(c(1, -1), size = p, replace = TRUE)))
+  mean(h0_dist >= obs_mean)  # p-value
+}
+```
+
+```{r}
+print(mean(rt40 - rt0))
+my_permutation_test(rt40 - rt0)
+```
+
+```{r}
+my_permutation_test(rt80 - rt40)
+```
+
+```{r}
+my_permutation_test(rt120 - rt80)
+```
+
+```{r}
+my_permutation_test(rt160 - rt120)
+```
+
+## Using R's built-in tests
+
+### Wilcoxon signed-rank test
+
+The closest built-in equivalent of the sign-flipping permutation test is the Wilcoxon signed-rank test, which is a permutation test on the ranks of the differences (two-sided by default, like `scipy.stats.permutation_test`).
+
+```{r}
+wilcox.test(rt40 - rt0, mu = 0)
+```
+
+### Student t-test
+
+See <https://en.wikipedia.org/wiki/Student%27s_t-test>
+
+```{r}
+# computing the t value "à la mano"
+d <- rt40 - rt0
+m <- mean(d)
+s <- sd(d)      # R's sd() divides by n-1 (numpy's std() divides by n)
+n <- length(d)
+t <- m / s * sqrt(n)
+print(c(m = m, s = s, n = n, t = t))
+
+t.test(d, mu = 0)
+```
