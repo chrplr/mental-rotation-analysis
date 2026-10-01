@@ -1,0 +1,21 @@
+---
+title: "estimation"
+output: html_document
+date: "2026-10-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+a = rnorm(100000, mean=100, sd=10)
+hist(a)
+```
+```{r}
+N = 10
+estimates = replicate(1000, mean(sample(a, N)))
+hist(estimates)
+sd(estimates)
+```
+
